@@ -1,6 +1,9 @@
 package co
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 func FromContextCO(ctx context.Context) *Coroutine {
 	co, ok := ctx.Value(ctxCOKey).(*Coroutine)
@@ -48,4 +51,13 @@ func Async(ctx context.Context, f TaskFunc) error {
 		return ErrNeedFromCoroutine
 	}
 	return co.Async(f)
+}
+
+func Sleep(ctx context.Context, d time.Duration) {
+	co := FromContextCO(ctx)
+	if co == nil {
+		time.Sleep(d)
+		return
+	}
+	co.Sleep(ctx, d)
 }

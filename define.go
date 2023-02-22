@@ -10,7 +10,7 @@ var (
 	ErrAlreadyInCoroutine   = errors.New("already in coroutine")
 )
 
-type ContextKey struct{ _ int }
+type ContextKey struct{ int }
 
 var (
 	ctxCOKey     = &ContextKey{}

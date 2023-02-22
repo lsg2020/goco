@@ -2,17 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
 	co "github.com/lsg2020/goco"
 )
-
-func sleep(ctx context.Context) error {
-	time.Sleep(time.Second)
-	return nil
-}
 
 func main() {
 	coroutine, err := co.New(nil)
@@ -25,15 +19,13 @@ func main() {
 		go func(ctx context.Context, coID int) {
 			var result int
 
+			ctx, _ = context.WithTimeout(ctx, time.Second*3)
 			err := coroutine.Run(ctx, func(ctx context.Context) error {
-				for i := 0; i <= 5; i++ {
+				for i := 0; i < 5; i++ {
 					testData++
 					log.Printf("current co:%d i:%d value:%d", coID, i, testData)
 
-					err = co.Await(ctx, sleep)
-					if err != nil {
-						return fmt.Errorf("async run failed, %w", err)
-					}
+					co.Sleep(ctx, time.Second)
 				}
 
 				result = testData

@@ -3,6 +3,7 @@ package co
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 func New(opts *Options) (*Coroutine, error) {
@@ -10,7 +11,9 @@ func New(opts *Options) (*Coroutine, error) {
 		opts = &Options{}
 	}
 
-	co := &Coroutine{}
+	co := &Coroutine{
+		opts: opts,
+	}
 	err := co.init(opts)
 	if err != nil {
 		return nil, fmt.Errorf("init coroutine failed, %w", err)
@@ -21,6 +24,7 @@ func New(opts *Options) (*Coroutine, error) {
 type TaskFunc func(ctx context.Context) error
 
 type Coroutine struct {
+	opts   *Options
 	ex     *Executer
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -50,11 +54,27 @@ func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
 }
 
 func (co *Coroutine) Async(f TaskFunc) error {
-	go func() {
+	task := func() {
 		ctx := WithContextCO(co.ctx, co)
 		_ = f(ctx)
-	}()
+	}
+	if co.opts.AsyncTaskSubmit != nil {
+		return co.opts.AsyncTaskSubmit(task)
+	}
+	go task()
 	return nil
+}
+
+func (co *Coroutine) Sleep(ctx context.Context, d time.Duration) {
+	if FromContextStatus(ctx) != StatusRunning {
+		return
+	}
+
+	sessionID := co.ex.PreWait()
+	time.AfterFunc(d, func() {
+		co.ex.wakeup(sessionID, nil)
+	})
+	_ = co.ex.Wait(ctx, sessionID)
 }
 
 func (co *Coroutine) Close() {
