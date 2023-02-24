@@ -3,8 +3,9 @@ package co
 import "errors"
 
 var (
+	ErrNeedCoroutineName    = errors.New("coroutine need name")
 	ErrCancelContext        = errors.New("coroutine cancel context")
-	ErrWaitSessionMiss      = errors.New("wait session miss")
+	ErrWaitSessionMiss      = errors.New("waiting session miss")
 	ErrCoroutineLimitAmount = errors.New("coroutine limit amount")
 	ErrNeedFromCoroutine    = errors.New("need from coroutine")
 	ErrAlreadyInCoroutine   = errors.New("already in coroutine")
@@ -13,13 +14,14 @@ var (
 type ContextKey struct{ int }
 
 var (
-	ctxCOKey     = &ContextKey{}
-	ctxStatusKey = &ContextKey{}
+	ctxCOKey   = &ContextKey{}
+	ctxTaskKey = &ContextKey{}
 )
 
 type StatusType int
 
 const (
-	StatusEmpty   StatusType = 0
-	StatusRunning StatusType = 1
+	StatusDead      StatusType = 0
+	StatusSuspended StatusType = 1
+	StatusRunning   StatusType = 2
 )

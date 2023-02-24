@@ -17,16 +17,16 @@ func WithContextCO(ctx context.Context, co *Coroutine) context.Context {
 	return context.WithValue(ctx, ctxCOKey, co)
 }
 
-func FromContextStatus(ctx context.Context) StatusType {
-	s, ok := ctx.Value(ctxStatusKey).(StatusType)
+func FromContextTask(ctx context.Context) *Task {
+	s, ok := ctx.Value(ctxTaskKey).(*Task)
 	if !ok {
-		return StatusEmpty
+		return nil
 	}
 	return s
 }
 
-func WithContextStatus(ctx context.Context, s StatusType) context.Context {
-	return context.WithValue(ctx, ctxStatusKey, s)
+func WithContextTask(ctx context.Context, task *Task) context.Context {
+	return context.WithValue(ctx, ctxTaskKey, task)
 }
 
 func Run(ctx context.Context, f TaskFunc, opts *RunOptions) error {
@@ -35,6 +35,14 @@ func Run(ctx context.Context, f TaskFunc, opts *RunOptions) error {
 		return ErrNeedFromCoroutine
 	}
 	return co.Run(ctx, f, opts)
+}
+
+func RunWait(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+	co := FromContextCO(ctx)
+	if co == nil {
+		return ErrNeedFromCoroutine
+	}
+	return co.RunWait(ctx, f, opts)
 }
 
 func Await(ctx context.Context, f TaskFunc) error {

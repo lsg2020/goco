@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	coroutine, err := co.New(nil)
+	coroutine, err := co.New(&co.Options{Name: "test"})
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -20,7 +20,7 @@ func main() {
 			var result int
 
 			ctx, _ = context.WithTimeout(ctx, time.Second*3)
-			err := coroutine.Run(ctx, func(ctx context.Context) error {
+			err := coroutine.RunWait(ctx, func(ctx context.Context) error {
 				for i := 0; i < 5; i++ {
 					testData++
 					log.Printf("current co:%d i:%d value:%d", coID, i, testData)

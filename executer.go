@@ -9,39 +9,27 @@ import (
 	"time"
 )
 
-func NewExecuter(ctx context.Context) (*Executer, error) {
+func NewExecuter(ctx context.Context, initWorkAmount int, channelSize int) (*Executer, error) {
 	ex := &Executer{
 		ctx: ctx,
 	}
-	err := ex.start(ctx, 5, 1024)
+	err := ex.start(ctx, initWorkAmount, channelSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executer start failed, %w", err)
 	}
 	return ex, nil
-}
-
-type taskInfo struct {
-	ctx context.Context
-	co  *Coroutine
-	f   TaskFunc
-	ch  chan error
-
-	// wakeup
-	isWakeup  bool
-	sessionID uint64
-	err       error
 }
 
 type Executer struct {
 	ctx  context.Context
 	cond *sync.Cond
 
-	workId     int
-	workAmount int
-	waitAmount int
-
-	tasks       chan *taskInfo
+	workId      int
+	workAmount  int
+	waitAmount  int
 	nextSession uint64
+
+	tasks chan *Task
 
 	waitConds  map[uint64]*sync.Cond
 	waitResult error
@@ -52,19 +40,17 @@ type Executer struct {
 	waitSessions map[uint64]context.Context
 }
 
-func (ex *Executer) Run(ctx context.Context, f TaskFunc, co *Coroutine) error {
-	if FromContextStatus(ctx) == StatusRunning {
+func (ex *Executer) Run(ctx context.Context, f TaskFunc, co *Coroutine, opts *RunOptions) error {
+	if FromContextTask(ctx) != nil {
 		return ErrAlreadyInCoroutine
 	}
 
-	ch := make(chan error, 1)
-	ex.tasks <- &taskInfo{ctx: ctx, co: co, f: f, ch: ch}
-	err := <-ch
-	return err
+	ex.tasks <- &Task{ctx: ctx, co: co, f: f, opts: opts}
+	return nil
 }
 
 func (ex *Executer) wakeup(sessionID uint64, err error) {
-	ex.tasks <- &taskInfo{isWakeup: true, sessionID: sessionID, err: err}
+	ex.tasks <- &Task{wakeup: true, sessionID: sessionID, err: err}
 }
 
 func (ex *Executer) PreWait() uint64 {
@@ -77,7 +63,12 @@ func (ex *Executer) PreWait() uint64 {
 }
 
 func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
-	if FromContextStatus(ctx) != StatusRunning {
+	co := FromContextCO(ctx)
+	if co == nil {
+		return ErrNeedFromCoroutine
+	}
+	task := FromContextTask(ctx)
+	if task == nil {
 		return ErrNeedFromCoroutine
 	}
 
@@ -100,12 +91,16 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		ex.cond.L.Lock()
 	}
 
+	task.status = StatusSuspended
+	co.addWaiting(1)
 	ex.pushWait(sessionID, ctx)
 
 	ex.cond.Signal()
 	waitCond.Wait()
 
 	ex.popWait(sessionID)
+	co.addWaiting(-1)
+	task.status = StatusRunning
 
 	ex.workId = currentWorkId
 	ex.waitAmount--
@@ -119,7 +114,7 @@ func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize i
 	ex.nextSession = 0
 
 	ex.ctx = ctx
-	ex.tasks = make(chan *taskInfo, channelSize)
+	ex.tasks = make(chan *Task, channelSize)
 
 	ex.workAmount = initWorkAmount
 
@@ -210,7 +205,7 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 	for {
 		select {
 		case task := <-ex.tasks:
-			if task.isWakeup {
+			if task.wakeup {
 				waitCond, ok := ex.waitConds[task.sessionID]
 				if ok {
 					ex.waitResult = task.err
@@ -221,15 +216,21 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 				continue
 			}
 
+			task.status = StatusRunning
+
 			ctx := WithContextCO(task.ctx, task.co)
-			ctx = WithContextStatus(ctx, StatusRunning)
+			ctx = WithContextTask(ctx, task)
 			func() {
 				defer func() {
+					task.status = StatusDead
+
+					task.co.addRunning(-1)
 					if r := recover(); r != nil {
-						task.ch <- fmt.Errorf("task panic, %v", r)
+						task.OnResult(fmt.Errorf("task panic, %v", r))
 					}
 				}()
-				task.ch <- task.f(ctx)
+				task.co.addRunning(1)
+				task.OnResult(task.f(ctx))
 			}()
 		case <-ex.ctx.Done():
 			return
