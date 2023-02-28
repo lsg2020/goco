@@ -7,7 +7,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/lsg2020/goco/internal/lock"
 )
+
+type Task interface {
+	Run()
+	OnSuspended()
+	OnResume()
+}
+
+type wakeup struct {
+	sessionID uint64
+	result    error
+}
 
 func NewExecuter(ctx context.Context, initWorkAmount int, channelSize int) (*Executer, error) {
 	ex := &Executer{
@@ -29,7 +42,8 @@ type Executer struct {
 	waitAmount  int
 	nextSession uint64
 
-	tasks chan *Task
+	tasks   chan Task
+	wakeups chan *wakeup
 
 	waitConds  map[uint64]*sync.Cond
 	waitResult error
@@ -40,20 +54,19 @@ type Executer struct {
 	waitSessions map[uint64]context.Context
 }
 
-func (ex *Executer) Run(ctx context.Context, f TaskFunc, co *Coroutine, opts *RunOptions) error {
+func (ex *Executer) Run(ctx context.Context, task Task) error {
 	if FromContextTask(ctx) != nil {
 		return ErrAlreadyInCoroutine
 	}
-
-	ex.tasks <- &Task{ctx: ctx, co: co, f: f, opts: opts}
+	ex.tasks <- task
 	return nil
 }
 
-func (ex *Executer) wakeup(sessionID uint64, err error) {
-	ex.tasks <- &Task{wakeup: true, sessionID: sessionID, err: err}
+func (ex *Executer) Wakeup(sessionID uint64, err error) {
+	ex.wakeups <- &wakeup{sessionID: sessionID, result: err}
 }
 
-func (ex *Executer) PreWait() uint64 {
+func (ex *Executer) PrepareWait() uint64 {
 	sessionID := atomic.AddUint64(&ex.nextSession, 1)
 	if sessionID == 0 {
 		sessionID = atomic.AddUint64(&ex.nextSession, 1)
@@ -63,10 +76,6 @@ func (ex *Executer) PreWait() uint64 {
 }
 
 func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
-	co := FromContextCO(ctx)
-	if co == nil {
-		return ErrNeedFromCoroutine
-	}
 	task := FromContextTask(ctx)
 	if task == nil {
 		return ErrNeedFromCoroutine
@@ -77,7 +86,6 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		return ErrWaitSessionMiss
 	}
 	ex.waitAmount++
-
 	currentWorkId := ex.workId
 
 	if ex.waitAmount == ex.workAmount {
@@ -91,30 +99,29 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		ex.cond.L.Lock()
 	}
 
-	task.status = StatusSuspended
-	co.addWaiting(1)
+	task.OnSuspended()
 	ex.pushWait(sessionID, ctx)
 
 	ex.cond.Signal()
 	waitCond.Wait()
 
 	ex.popWait(sessionID)
-	co.addWaiting(-1)
-	task.status = StatusRunning
+	task.OnResume()
 
 	ex.workId = currentWorkId
 	ex.waitAmount--
-	delete(ex.waitConds, sessionID)
+	// delete(ex.waitConds, sessionID)
 
 	return ex.waitResult
 }
 
 func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize int) error {
-	ex.cond = sync.NewCond(new(sync.Mutex))
+	ex.cond = sync.NewCond(new(lock.SpinLock))
 	ex.nextSession = 0
 
 	ex.ctx = ctx
-	ex.tasks = make(chan *Task, channelSize)
+	ex.tasks = make(chan Task, channelSize)
+	ex.wakeups = make(chan *wakeup, channelSize)
 
 	ex.workAmount = initWorkAmount
 
@@ -169,7 +176,7 @@ func (ex *Executer) monitor(ctx context.Context) {
 			continue
 		}
 
-		ex.wakeup(sessions[chosen], ErrCancelContext)
+		ex.Wakeup(sessions[chosen], ErrCancelContext)
 	}
 }
 
@@ -205,33 +212,16 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 	for {
 		select {
 		case task := <-ex.tasks:
-			if task.wakeup {
-				waitCond, ok := ex.waitConds[task.sessionID]
-				if ok {
-					ex.waitResult = task.err
-					waitCond.Signal()
-					ex.cond.Wait()
-					ex.workId = workId
-				}
-				continue
+			task.Run()
+		case w := <-ex.wakeups:
+			waitCond, ok := ex.waitConds[w.sessionID]
+			if ok {
+				delete(ex.waitConds, w.sessionID)
+				ex.waitResult = w.result
+				waitCond.Signal()
+				ex.cond.Wait()
+				ex.workId = workId
 			}
-
-			task.status = StatusRunning
-
-			ctx := WithContextCO(task.ctx, task.co)
-			ctx = WithContextTask(ctx, task)
-			func() {
-				defer func() {
-					task.status = StatusDead
-
-					task.co.addRunning(-1)
-					if r := recover(); r != nil {
-						task.OnResult(fmt.Errorf("task panic, %v", r))
-					}
-				}()
-				task.co.addRunning(1)
-				task.OnResult(task.f(ctx))
-			}()
 		case <-ex.ctx.Done():
 			return
 		}

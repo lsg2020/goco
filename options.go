@@ -16,7 +16,10 @@ type Options struct {
 	InitWorkAmount  int
 	WorkChannelSize int
 	RunLimitTime    time.Duration
-	// DebugRecord
+	// TaskLimitAmount int32
+
+	OpenDebug bool
+	DebugInfo string
 }
 
 func (opts *Options) init() error {

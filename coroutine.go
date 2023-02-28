@@ -3,8 +3,9 @@ package co
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"time"
+
+	"github.com/lsg2020/goco/internal/debug"
 )
 
 func New(opts *Options) (*Coroutine, error) {
@@ -30,45 +31,57 @@ type Coroutine struct {
 	ex     *Executer
 	ctx    context.Context
 	cancel context.CancelFunc
-
-	running int64
-	waiting int64
+	debug  *debug.Debug
 }
 
-func (co *Coroutine) Run(ctx context.Context, f TaskFunc, opts *RunOptions) error {
-	return co.ex.Run(ctx, f, co, opts)
+func (co *Coroutine) RunAsync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+	return co.ex.Run(ctx, &coTask{ctx: ctx, co: co, f: f, opts: opts})
 }
 
-func (co *Coroutine) RunWait(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+func (co *Coroutine) RunSync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
 	if opts == nil {
 		opts = &RunOptions{}
 	}
+
 	ch := make(chan error, 1)
 	opts.Result = func(err error) {
 		ch <- err
 	}
-	err := co.Run(ctx, f, opts)
+	err := co.RunAsync(ctx, f, opts)
 	if err != nil {
 		return fmt.Errorf("coroutine run failed, %w", err)
 	}
 	return <-ch
 }
 
+func (co *Coroutine) PrepareWait() uint64 {
+	sessionID := co.ex.PrepareWait()
+	return sessionID
+}
+
+func (co *Coroutine) Wait(ctx context.Context, sessionID uint64) error {
+	return co.ex.Wait(ctx, sessionID)
+}
+
+func (co *Coroutine) Wakeup(sessionID uint64, result error) {
+	co.ex.Wakeup(sessionID, result)
+}
+
 func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
-	sessionID := co.ex.PreWait()
+	sessionID := co.PrepareWait()
 
 	err := co.Async(func(ctx context.Context) error {
 		err := f(ctx)
-		co.ex.wakeup(sessionID, err)
+		co.Wakeup(sessionID, err)
 		return err
 	})
 	if err != nil {
-		co.ex.wakeup(sessionID, fmt.Errorf("post async task failed, %w", err))
-		return err
+		co.Wakeup(sessionID, fmt.Errorf("post async task failed, %w", err))
+		// return err
 	}
 	err = co.ex.Wait(ctx, sessionID)
 	if err != nil {
-		co.ex.wakeup(sessionID, err)
+		co.ex.Wakeup(sessionID, err)
 		return err
 	}
 	return nil
@@ -87,13 +100,13 @@ func (co *Coroutine) Async(f TaskFunc) error {
 }
 
 func (co *Coroutine) Sleep(ctx context.Context, d time.Duration) {
-	sessionID := co.ex.PreWait()
+	sessionID := co.ex.PrepareWait()
 	time.AfterFunc(d, func() {
-		co.ex.wakeup(sessionID, nil)
+		co.ex.Wakeup(sessionID, nil)
 	})
 	err := co.ex.Wait(ctx, sessionID)
 	if err != nil {
-		co.ex.wakeup(sessionID, err)
+		co.ex.Wakeup(sessionID, err)
 		return
 	}
 }
@@ -103,6 +116,13 @@ func (co *Coroutine) Close() {
 }
 
 func (co *Coroutine) init(opts *Options) error {
+	if opts.OpenDebug {
+		d, err := debug.NewDebug(opts.DebugInfo)
+		if err != nil {
+			return fmt.Errorf("create debug failed, %w", err)
+		}
+		co.debug = d
+	}
 	if opts.Parent != nil {
 		co.ctx, co.cancel = context.WithCancel(opts.Parent.ctx)
 		co.ex = opts.Parent.ex
@@ -116,20 +136,4 @@ func (co *Coroutine) init(opts *Options) error {
 	}
 	co.ex = ex
 	return nil
-}
-
-func (co *Coroutine) GetRunning() int64 {
-	return atomic.LoadInt64(&co.running)
-}
-
-func (co *Coroutine) addRunning(v int64) {
-	atomic.AddInt64(&co.running, v)
-}
-
-func (co *Coroutine) GetWaiting() int64 {
-	return atomic.LoadInt64(&co.waiting)
-}
-
-func (co *Coroutine) addWaiting(v int64) {
-	atomic.AddInt64(&co.waiting, v)
 }

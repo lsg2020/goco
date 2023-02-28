@@ -11,17 +11,9 @@ var (
 	ErrAlreadyInCoroutine   = errors.New("already in coroutine")
 )
 
-type ContextKey struct{ int }
+type ContextKey struct{ _ int }
 
 var (
 	ctxCOKey   = &ContextKey{}
 	ctxTaskKey = &ContextKey{}
-)
-
-type StatusType int
-
-const (
-	StatusDead      StatusType = 0
-	StatusSuspended StatusType = 1
-	StatusRunning   StatusType = 2
 )

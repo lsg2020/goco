@@ -17,32 +17,58 @@ func WithContextCO(ctx context.Context, co *Coroutine) context.Context {
 	return context.WithValue(ctx, ctxCOKey, co)
 }
 
-func FromContextTask(ctx context.Context) *Task {
-	s, ok := ctx.Value(ctxTaskKey).(*Task)
+func FromContextTask(ctx context.Context) Task {
+	s, ok := ctx.Value(ctxTaskKey).(Task)
 	if !ok {
 		return nil
 	}
 	return s
 }
 
-func WithContextTask(ctx context.Context, task *Task) context.Context {
+func WithContextTask(ctx context.Context, task Task) context.Context {
 	return context.WithValue(ctx, ctxTaskKey, task)
 }
 
-func Run(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+func RunAsync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
 	co := FromContextCO(ctx)
 	if co == nil {
 		return ErrNeedFromCoroutine
 	}
-	return co.Run(ctx, f, opts)
+	return co.RunAsync(ctx, f, opts)
 }
 
-func RunWait(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+func RunSync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
 	co := FromContextCO(ctx)
 	if co == nil {
 		return ErrNeedFromCoroutine
 	}
-	return co.RunWait(ctx, f, opts)
+	return co.RunSync(ctx, f, opts)
+}
+
+func PrepareWait(ctx context.Context) (uint64, error) {
+	co := FromContextCO(ctx)
+	if co == nil {
+		return 0, ErrNeedFromCoroutine
+	}
+	sessionID := co.PrepareWait()
+	return sessionID, nil
+}
+
+func Wait(ctx context.Context, sessionID uint64) error {
+	co := FromContextCO(ctx)
+	if co == nil {
+		return ErrNeedFromCoroutine
+	}
+	return co.Wait(ctx, sessionID)
+}
+
+func Wakeup(ctx context.Context, sessionID uint64, result error) error {
+	co := FromContextCO(ctx)
+	if co == nil {
+		return ErrNeedFromCoroutine
+	}
+	co.ex.Wakeup(sessionID, result)
+	return nil
 }
 
 func Await(ctx context.Context, f TaskFunc) error {
