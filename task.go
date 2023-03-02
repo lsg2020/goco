@@ -3,8 +3,11 @@ package co
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/lsg2020/goco/internal/logger"
 )
 
 type StatusType int32
@@ -36,13 +39,6 @@ func (t *coTask) OnResume() {
 	t.setStatus(StatusRunning)
 }
 
-func (t *coTask) OnResult(err error) {
-	if t.opts != nil && t.opts.Result != nil {
-		t.opts.Result(err)
-		return
-	}
-}
-
 func (t *coTask) Run() {
 	ctx := WithContextCO(t.ctx, t.co)
 	ctx = WithContextTask(ctx, t)
@@ -54,7 +50,9 @@ func (t *coTask) Run() {
 		t.setStatus(StatusDead)
 		t.co.debug.AddRunning(-1)
 		if r := recover(); r != nil {
-			t.OnResult(fmt.Errorf("task panic, %v", r))
+			err := fmt.Errorf("task panic, %v", r)
+			t.co.logger.Log(logger.LogLevelError, "co task run failed, %s %v", t.getTaskName(), r)
+			t.OnResult(err)
 		}
 	}()
 
@@ -64,6 +62,13 @@ func (t *coTask) Run() {
 
 	r := t.f(ctx)
 	t.OnResult(r)
+}
+
+func (t *coTask) OnResult(err error) {
+	if t.opts.Result != nil {
+		t.opts.Result(err)
+		return
+	}
 }
 
 func (t *coTask) setStatus(s StatusType) {
@@ -94,7 +99,15 @@ func (t *coTask) checkRunLimitTime() {
 	}
 	t.limitTimer = time.AfterFunc(limitTime, func() {
 		if t.getStatus() != StatusDead {
-			fmt.Println("---------------- run limit time", t.co.debug)
+			t.co.logger.Log(logger.LogLevelError, "out of limit time %s", t.getTaskName())
 		}
 	})
+}
+
+func (t *coTask) getTaskName() string {
+	name := t.co.opts.Name + ":" + t.co.opts.DebugInfo + ":" + t.opts.Name
+	if t.opts.line != 0 {
+		name += "( " + t.opts.file + ":" + strconv.FormatInt(int64(t.opts.line), 10) + " )"
+	}
+	return name
 }

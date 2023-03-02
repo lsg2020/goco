@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "test", OpenDebug: true})
+	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "demo", OpenDebug: true})
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -30,7 +30,7 @@ func main() {
 
 				result = testData
 				return nil
-			}, nil)
+			}, &co.RunOptions{RunLimitTime: time.Second * 2})
 
 			log.Println("run result:", coID, result, err)
 		}(context.Background(), i)

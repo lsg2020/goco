@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/lsg2020/goco/internal/lock"
 )
 
 type Task interface {
@@ -116,7 +114,7 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 }
 
 func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize int) error {
-	ex.cond = sync.NewCond(new(lock.SpinLock))
+	ex.cond = sync.NewCond(new(sync.Mutex))
 	ex.nextSession = 0
 
 	ex.ctx = ctx

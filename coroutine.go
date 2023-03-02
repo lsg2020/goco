@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/lsg2020/goco/internal/debug"
+	"github.com/lsg2020/goco/internal/logger"
 )
 
 func New(opts *Options) (*Coroutine, error) {
@@ -32,16 +33,16 @@ type Coroutine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	debug  *debug.Debug
+	logger logger.Log
 }
 
 func (co *Coroutine) RunAsync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
+	opts = opts.init(co.opts.OpenDebug)
 	return co.ex.Run(ctx, &coTask{ctx: ctx, co: co, f: f, opts: opts})
 }
 
 func (co *Coroutine) RunSync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
-	if opts == nil {
-		opts = &RunOptions{}
-	}
+	opts = opts.init(co.opts.OpenDebug)
 
 	ch := make(chan error, 1)
 	opts.Result = func(err error) {
@@ -126,8 +127,18 @@ func (co *Coroutine) init(opts *Options) error {
 	if opts.Parent != nil {
 		co.ctx, co.cancel = context.WithCancel(opts.Parent.ctx)
 		co.ex = opts.Parent.ex
+		co.logger = opts.Parent.logger
 		return nil
 	}
+
+	l, err := logger.NewLogger("goco", logger.StringToLevel(co.opts.LogLevel))
+	if err != nil {
+		return fmt.Errorf("create logger failed, %w", err)
+	}
+	if co.opts.Logger != nil {
+		l.SetLogger(co.opts.Logger, logger.StringToLevel(co.opts.LogLevel))
+	}
+	co.logger = l
 
 	co.ctx, co.cancel = context.WithCancel(context.Background())
 	ex, err := NewExecuter(co.ctx, co.opts.InitWorkAmount, co.opts.WorkChannelSize)
