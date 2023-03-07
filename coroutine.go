@@ -2,11 +2,10 @@ package co
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
-
-	"github.com/lsg2020/goco/internal/debug"
-	"github.com/lsg2020/goco/internal/logger"
 )
 
 func New(opts *Options) (*Coroutine, error) {
@@ -28,21 +27,40 @@ func New(opts *Options) (*Coroutine, error) {
 type TaskFunc func(ctx context.Context) error
 
 type Coroutine struct {
-	opts   *Options
-	ex     *Executer
-	ctx    context.Context
-	cancel context.CancelFunc
-	debug  *debug.Debug
-	logger logger.Log
+	opts    *Options
+	ctx     context.Context
+	cancel  context.CancelFunc
+	isClose int32
+}
+
+func (co *Coroutine) GetOpts() *Options {
+	return co.opts
+}
+
+func (co *Coroutine) GetExecuter() *Executer {
+	return co.opts.Executer
+}
+
+func (co *Coroutine) IsClose() bool {
+	return atomic.LoadInt32(&co.isClose) == 1
+}
+
+func (co *Coroutine) Close() {
+	if co.IsClose() {
+		return
+	}
+
+	co.cancel()
+	atomic.StoreInt32(&co.isClose, 1)
 }
 
 func (co *Coroutine) RunAsync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
-	opts = opts.init(co.opts.OpenDebug)
-	return co.ex.Run(ctx, &coTask{ctx: ctx, co: co, f: f, opts: opts})
+	opts = opts.init()
+	return co.GetExecuter().Run(ctx, &coTask{co: co, f: f, opts: opts})
 }
 
 func (co *Coroutine) RunSync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
-	opts = opts.init(co.opts.OpenDebug)
+	opts = opts.init()
 
 	ch := make(chan error, 1)
 	opts.Result = func(err error) {
@@ -56,16 +74,20 @@ func (co *Coroutine) RunSync(ctx context.Context, f TaskFunc, opts *RunOptions) 
 }
 
 func (co *Coroutine) PrepareWait() uint64 {
-	sessionID := co.ex.PrepareWait()
+	sessionID := co.GetExecuter().PrepareWait()
 	return sessionID
 }
 
 func (co *Coroutine) Wait(ctx context.Context, sessionID uint64) error {
-	return co.ex.Wait(ctx, sessionID)
+	r := co.GetExecuter().Wait(ctx, sessionID)
+	if co.IsClose() {
+		panic("coroutine close")
+	}
+	return r
 }
 
 func (co *Coroutine) Wakeup(sessionID uint64, result error) {
-	co.ex.Wakeup(sessionID, result)
+	co.GetExecuter().Wakeup(sessionID, result)
 }
 
 func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
@@ -80,71 +102,78 @@ func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
 		co.Wakeup(sessionID, fmt.Errorf("post async task failed, %w", err))
 		// return err
 	}
-	err = co.ex.Wait(ctx, sessionID)
+	err = co.Wait(ctx, sessionID)
 	if err != nil {
-		co.ex.Wakeup(sessionID, err)
+		if errors.Is(err, ErrNeedFromCoroutine) || errors.Is(err, ErrWaitSessionMiss) {
+			co.Wakeup(sessionID, err)
+		}
 		return err
 	}
 	return nil
 }
 
 func (co *Coroutine) Async(f TaskFunc) error {
-	task := func() {
+	t := func() {
 		ctx := WithContextCO(co.ctx, co)
 		_ = f(ctx)
 	}
-	if co.opts.AsyncTaskSubmit != nil {
-		return co.opts.AsyncTaskSubmit(task)
+	if co.GetExecuter().GetOpts().AsyncTaskSubmit != nil {
+		return co.GetExecuter().GetOpts().AsyncTaskSubmit(t)
 	}
-	go task()
+	go t()
 	return nil
 }
 
 func (co *Coroutine) Sleep(ctx context.Context, d time.Duration) {
-	sessionID := co.ex.PrepareWait()
+	sessionID := co.GetExecuter().PrepareWait()
 	time.AfterFunc(d, func() {
-		co.ex.Wakeup(sessionID, nil)
+		co.Wakeup(sessionID, nil)
 	})
-	err := co.ex.Wait(ctx, sessionID)
+	err := co.Wait(ctx, sessionID)
 	if err != nil {
-		co.ex.Wakeup(sessionID, err)
+		if errors.Is(err, ErrNeedFromCoroutine) || errors.Is(err, ErrWaitSessionMiss) {
+			co.Wakeup(sessionID, err)
+		}
 		return
 	}
 }
 
-func (co *Coroutine) Close() {
-	co.cancel()
+func (co *Coroutine) OnTaskSuspended(t Task) {
+	if co.opts.OnTaskSuspended != nil {
+		co.opts.OnTaskSuspended(co, t)
+	}
 }
 
+func (co *Coroutine) OnTaskResume(t Task) {
+	if co.opts.OnTaskResume != nil {
+		co.opts.OnTaskResume(co, t)
+	}
+}
+
+func (co *Coroutine) OnTaskRunning(t Task) {
+	if co.opts.OnTaskRunning != nil {
+		co.opts.OnTaskRunning(co, t)
+	}
+}
+
+func (co *Coroutine) OnTaskFinish(t Task) {
+	if co.opts.OnTaskFinish != nil {
+		co.opts.OnTaskFinish(co, t)
+	}
+}
+
+func (co *Coroutine) OnTaskRecover(t Task, err error) {
+	if co.opts.OnTaskRecover != nil {
+		co.opts.OnTaskRecover(co, t, err)
+	}
+}
+
+func (co *Coroutine) OnTaskTimeout(t Task) {
+	if co.opts.OnTaskTimeout != nil {
+		co.opts.OnTaskTimeout(co, t)
+	}
+}
 func (co *Coroutine) init(opts *Options) error {
-	if opts.OpenDebug {
-		d, err := debug.NewDebug(opts.DebugInfo)
-		if err != nil {
-			return fmt.Errorf("create debug failed, %w", err)
-		}
-		co.debug = d
-	}
-	if opts.Parent != nil {
-		co.ctx, co.cancel = context.WithCancel(opts.Parent.ctx)
-		co.ex = opts.Parent.ex
-		co.logger = opts.Parent.logger
-		return nil
-	}
-
-	l, err := logger.NewLogger("goco", logger.StringToLevel(co.opts.LogLevel))
-	if err != nil {
-		return fmt.Errorf("create logger failed, %w", err)
-	}
-	if co.opts.Logger != nil {
-		l.SetLogger(co.opts.Logger, logger.StringToLevel(co.opts.LogLevel))
-	}
-	co.logger = l
-
-	co.ctx, co.cancel = context.WithCancel(context.Background())
-	ex, err := NewExecuter(co.ctx, co.opts.InitWorkAmount, co.opts.WorkChannelSize)
-	if err != nil {
-		return fmt.Errorf("create executer failed, %w", err)
-	}
-	co.ex = ex
+	co.ctx, co.cancel = context.WithCancel(opts.Executer.GetCtx())
 	return nil
 }

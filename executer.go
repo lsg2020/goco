@@ -10,7 +10,8 @@ import (
 )
 
 type Task interface {
-	Run()
+	GetName() string
+	Run(context.Context)
 	OnSuspended()
 	OnResume()
 }
@@ -20,11 +21,23 @@ type wakeup struct {
 	result    error
 }
 
-func NewExecuter(ctx context.Context, initWorkAmount int, channelSize int) (*Executer, error) {
-	ex := &Executer{
-		ctx: ctx,
+type task struct {
+	ctx context.Context
+	t   Task
+}
+
+func NewExecuter(ctx context.Context, opts *ExOptions) (*Executer, error) {
+	err := opts.init()
+	if err != nil {
+		return nil, fmt.Errorf("executer options init failed, %w", err)
 	}
-	err := ex.start(ctx, initWorkAmount, channelSize)
+	ctx, cancel := context.WithCancel(ctx)
+	ex := &Executer{
+		ctx:    ctx,
+		cancel: cancel,
+		opts:   opts,
+	}
+	err = ex.start(ctx, opts.InitWorkAmount, opts.WorkChannelSize)
 	if err != nil {
 		return nil, fmt.Errorf("executer start failed, %w", err)
 	}
@@ -32,7 +45,10 @@ func NewExecuter(ctx context.Context, initWorkAmount int, channelSize int) (*Exe
 }
 
 type Executer struct {
-	ctx  context.Context
+	ctx    context.Context
+	cancel context.CancelFunc
+	opts   *ExOptions
+
 	cond *sync.Cond
 
 	workId      int
@@ -40,8 +56,8 @@ type Executer struct {
 	waitAmount  int
 	nextSession uint64
 
-	tasks   chan Task
-	wakeups chan *wakeup
+	tasks   chan task
+	wakeups chan wakeup
 
 	waitConds  map[uint64]*sync.Cond
 	waitResult error
@@ -52,16 +68,29 @@ type Executer struct {
 	waitSessions map[uint64]context.Context
 }
 
-func (ex *Executer) Run(ctx context.Context, task Task) error {
+func (ex *Executer) GetOpts() *ExOptions {
+	return ex.opts
+}
+
+func (ex *Executer) GetCtx() context.Context {
+	return ex.ctx
+}
+
+func (ex *Executer) Close() {
+	ex.cancel()
+}
+
+func (ex *Executer) Run(ctx context.Context, t Task) error {
 	if FromContextTask(ctx) != nil {
 		return ErrAlreadyInCoroutine
 	}
-	ex.tasks <- task
+	ex.OnTaskStart(t)
+	ex.tasks <- task{ctx: ctx, t: t}
 	return nil
 }
 
 func (ex *Executer) Wakeup(sessionID uint64, err error) {
-	ex.wakeups <- &wakeup{sessionID: sessionID, result: err}
+	ex.wakeups <- wakeup{sessionID: sessionID, result: err}
 }
 
 func (ex *Executer) PrepareWait() uint64 {
@@ -74,8 +103,8 @@ func (ex *Executer) PrepareWait() uint64 {
 }
 
 func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
-	task := FromContextTask(ctx)
-	if task == nil {
+	t := FromContextTask(ctx)
+	if t == nil {
 		return ErrNeedFromCoroutine
 	}
 
@@ -97,14 +126,22 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		ex.cond.L.Lock()
 	}
 
-	task.OnSuspended()
-	ex.pushWait(sessionID, ctx)
+	impl := func() error {
+		t.OnSuspended()
+		ex.pushWait(sessionID, ctx)
 
-	ex.cond.Signal()
-	waitCond.Wait()
+		ex.cond.Signal()
+		waitCond.Wait()
 
-	ex.popWait(sessionID)
-	task.OnResume()
+		ex.popWait(sessionID)
+		t.OnResume()
+		return ex.waitResult
+	}
+	if ex.opts.HookWait != nil {
+		ex.opts.HookWait(ex, t, sessionID, impl)
+	} else {
+		_ = impl()
+	}
 
 	ex.workId = currentWorkId
 	ex.waitAmount--
@@ -118,8 +155,8 @@ func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize i
 	ex.nextSession = 0
 
 	ex.ctx = ctx
-	ex.tasks = make(chan Task, channelSize)
-	ex.wakeups = make(chan *wakeup, channelSize)
+	ex.tasks = make(chan task, channelSize)
+	ex.wakeups = make(chan wakeup, channelSize)
 
 	ex.workAmount = initWorkAmount
 
@@ -203,16 +240,24 @@ func (ex *Executer) popWait(sessionID uint64) {
 
 func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 	ex.cond.L.Lock()
+	ex.OnWorkerCreate()
 	initWg.Done()
 	ex.cond.Wait()
 
 	ex.workId = workId
 	for {
 		select {
-		case task := <-ex.tasks:
-			task.Run()
+		case info := <-ex.tasks:
+			ex.OnTaskRunning(info.t)
+			if ex.opts.HookRun != nil {
+				ex.opts.HookRun(ex, info.t, info.ctx)
+			} else {
+				info.t.Run(info.ctx)
+			}
+			ex.OnTaskFinish(info.t)
 		case w := <-ex.wakeups:
 			waitCond, ok := ex.waitConds[w.sessionID]
+			ex.OnWakeup(ok, w.result)
 			if ok {
 				delete(ex.waitConds, w.sessionID)
 				ex.waitResult = w.result
@@ -223,5 +268,34 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 		case <-ex.ctx.Done():
 			return
 		}
+	}
+}
+
+func (ex *Executer) OnWorkerCreate() {
+	if ex.opts.OnWorkerCreate != nil {
+		ex.opts.OnWorkerCreate(ex)
+	}
+}
+
+func (ex *Executer) OnTaskStart(t Task) {
+	if ex.opts.OnTaskStart != nil {
+		ex.opts.OnTaskStart(ex, t)
+	}
+}
+
+func (ex *Executer) OnTaskRunning(t Task) {
+	if ex.opts.OnTaskRunning != nil {
+		ex.opts.OnTaskRunning(ex, t)
+	}
+}
+func (ex *Executer) OnTaskFinish(t Task) {
+	if ex.opts.OnTaskFinish != nil {
+		ex.opts.OnTaskFinish(ex, t)
+	}
+}
+
+func (ex *Executer) OnWakeup(ok bool, result error) {
+	if ex.opts.OnWakeup != nil {
+		ex.opts.OnWakeup(ex, ok, result)
 	}
 }

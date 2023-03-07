@@ -9,7 +9,11 @@ import (
 )
 
 func TestCO(t *testing.T) {
-	coroutine, err := New(&Options{Name: "test", DebugInfo: "test"})
+	ex, err := NewExecuter(context.Background(), &ExOptions{Name: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coroutine, err := New(&Options{Name: "test", DebugInfo: "test", Executer: ex})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,11 +26,11 @@ func TestCO(t *testing.T) {
 	for {
 		select {
 		case ch <- struct{}{}:
-			coroutine.RunAsync(ctx, func(ctx context.Context) error {
+			_ = coroutine.RunAsync(ctx, func(ctx context.Context) error {
 				t := time.Duration(rand.Int()%3+1) * time.Second
 				begin := time.Now()
 
-				for time.Now().Sub(begin) < t {
+				for time.Since(begin) < t {
 					amount++
 					if amount%100000 == 0 {
 						log.Println("==============", amount)

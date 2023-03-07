@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
-
-	"github.com/lsg2020/goco/internal/logger"
 )
 
 type StatusType int32
@@ -19,7 +17,6 @@ const (
 )
 
 type coTask struct {
-	ctx    context.Context
 	co     *Coroutine
 	status int32
 
@@ -30,17 +27,18 @@ type coTask struct {
 }
 
 func (t *coTask) OnSuspended() {
+	t.co.OnTaskSuspended(t)
 	t.setStatus(StatusSuspended)
-	t.co.debug.AddWaiting(1)
 }
 
 func (t *coTask) OnResume() {
-	t.co.debug.AddWaiting(-1)
 	t.setStatus(StatusRunning)
+	t.co.OnTaskResume(t)
 }
 
-func (t *coTask) Run() {
-	ctx := WithContextCO(t.ctx, t.co)
+func (t *coTask) Run(ctx context.Context) {
+	t.co.OnTaskRunning(t)
+	ctx = WithContextCO(ctx, t.co)
 	ctx = WithContextTask(ctx, t)
 
 	defer func() {
@@ -48,16 +46,17 @@ func (t *coTask) Run() {
 			t.limitTimer.Stop()
 		}
 		t.setStatus(StatusDead)
-		t.co.debug.AddRunning(-1)
+		t.co.OnTaskFinish(t)
 		if r := recover(); r != nil {
-			err := fmt.Errorf("task panic, %v", r)
-			t.co.logger.Log(logger.LogLevelError, "co task run failed, %s %v", t.getTaskName(), r)
-			t.OnResult(err)
+			if !t.co.IsClose() {
+				err := fmt.Errorf("task panic, %v", r)
+				t.co.OnTaskRecover(t, err)
+				t.OnResult(err)
+			}
 		}
 	}()
 
 	t.setStatus(StatusRunning)
-	t.co.debug.AddRunning(1)
 	t.checkRunLimitTime()
 
 	r := t.f(ctx)
@@ -99,12 +98,12 @@ func (t *coTask) checkRunLimitTime() {
 	}
 	t.limitTimer = time.AfterFunc(limitTime, func() {
 		if t.getStatus() != StatusDead {
-			t.co.logger.Log(logger.LogLevelError, "out of limit time %s", t.getTaskName())
+			t.co.OnTaskTimeout(t)
 		}
 	})
 }
 
-func (t *coTask) getTaskName() string {
+func (t *coTask) GetName() string {
 	name := t.co.opts.Name + ":" + t.co.opts.DebugInfo + ":" + t.opts.Name
 	if t.opts.line != 0 {
 		name += "( " + t.opts.file + ":" + strconv.FormatInt(int64(t.opts.line), 10) + " )"

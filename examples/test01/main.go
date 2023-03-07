@@ -14,14 +14,18 @@ import (
 func main() {
 	go http.ListenAndServe(":9090", nil)
 
-	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "test01"})
+	ex, err := co.NewExecuter(context.Background(), &co.ExOptions{Name: "test"})
+	if err != nil {
+		log.Fatalln(err)
+	}
+	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "test01", Executer: ex})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*600)
 	defer cancel()
-	ch := make(chan struct{}, 10000)
+	ch := make(chan struct{}, 100000)
 
 	amount := 0
 	for {
@@ -41,7 +45,7 @@ func main() {
 				return nil
 			}, &co.RunOptions{Result: func(err error) {
 				<-ch
-			}})
+			}, RunLimitTime: -1})
 		case <-ctx.Done():
 			return
 		}

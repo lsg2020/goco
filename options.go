@@ -1,15 +1,10 @@
 package co
 
 import (
+	"context"
 	"runtime"
 	"time"
 )
-
-// Logger is used for logging formatted messages.
-type Logger interface {
-	// Printf must have the same semantics as log.Printf.
-	Printf(format string, args ...interface{})
-}
 
 const (
 	defaultInitWorkAmount  = 5
@@ -17,20 +12,51 @@ const (
 	defaultRunLimitTime    = time.Second * 5
 )
 
-type Options struct {
-	Name   string
-	Parent *Coroutine
-
-	Logger   Logger
-	LogLevel string
-
+type ExOptions struct {
+	Name            string
 	InitWorkAmount  int
 	WorkChannelSize int
-	RunLimitTime    time.Duration
 	AsyncTaskSubmit func(func()) error
 
-	OpenDebug bool
-	DebugInfo string
+	HookRun  func(ex *Executer, task Task, ctx context.Context)
+	HookWait func(ex *Executer, t Task, sessionID uint64, f func() error)
+
+	OnWorkerCreate func(ex *Executer)
+	OnTaskStart    func(ex *Executer, t Task)
+	OnTaskRunning  func(ex *Executer, t Task)
+	OnTaskFinish   func(ex *Executer, t Task)
+	OnWakeup       func(ex *Executer, ok bool, result error)
+}
+
+func (opts *ExOptions) init() error {
+	if opts == nil {
+		opts = &ExOptions{}
+	}
+	if opts.Name == "" {
+		return ErrNeedExecuterName
+	}
+	if opts.InitWorkAmount == 0 {
+		opts.InitWorkAmount = defaultInitWorkAmount
+	}
+	if opts.WorkChannelSize == 0 {
+		opts.WorkChannelSize = defaultWorkChannelSize
+	}
+
+	return nil
+}
+
+type Options struct {
+	Name         string
+	DebugInfo    string
+	RunLimitTime time.Duration
+	Executer     *Executer
+
+	OnTaskSuspended func(co *Coroutine, t Task)
+	OnTaskResume    func(co *Coroutine, t Task)
+	OnTaskRunning   func(co *Coroutine, t Task)
+	OnTaskFinish    func(co *Coroutine, t Task)
+	OnTaskRecover   func(co *Coroutine, t Task, err error)
+	OnTaskTimeout   func(co *Coroutine, t Task)
 }
 
 func (opts *Options) init() error {
@@ -40,19 +66,12 @@ func (opts *Options) init() error {
 	if opts.Name == "" {
 		return ErrNeedCoroutineName
 	}
-	if opts.InitWorkAmount == 0 {
-		opts.InitWorkAmount = defaultInitWorkAmount
-	}
-	if opts.WorkChannelSize == 0 {
-		opts.WorkChannelSize = defaultWorkChannelSize
+	if opts.Executer == nil {
+		return ErrNeedExecuter
 	}
 	if opts.RunLimitTime == 0 {
 		opts.RunLimitTime = defaultRunLimitTime
 	}
-	if opts.LogLevel == "" {
-		opts.LogLevel = "debug"
-	}
-
 	return nil
 }
 
@@ -65,18 +84,16 @@ type RunOptions struct {
 	line int
 }
 
-func (opts *RunOptions) init(debug bool) *RunOptions {
+func (opts *RunOptions) init() *RunOptions {
 	if opts == nil {
 		opts = &RunOptions{}
 	}
 	if opts.Name == "" {
 		opts.Name = "unknown"
 	}
-	if debug {
-		_, file, line, ok := runtime.Caller(2)
-		if ok {
-			opts.file, opts.line = file, line
-		}
+	_, file, line, ok := runtime.Caller(2)
+	if ok {
+		opts.file, opts.line = file, line
 	}
 	return opts
 }

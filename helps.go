@@ -67,7 +67,7 @@ func Wakeup(ctx context.Context, sessionID uint64, result error) error {
 	if co == nil {
 		return ErrNeedFromCoroutine
 	}
-	co.ex.Wakeup(sessionID, result)
+	co.GetExecuter().Wakeup(sessionID, result)
 	return nil
 }
 

@@ -9,7 +9,11 @@ import (
 )
 
 func main() {
-	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "demo", OpenDebug: true})
+	ex, err := co.NewExecuter(context.Background(), &co.ExOptions{Name: "test"})
+	if err != nil {
+		log.Fatalln(err)
+	}
+	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "demo", Executer: ex})
 	if err != nil {
 		log.Fatalln(err)
 	}
