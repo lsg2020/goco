@@ -2,9 +2,7 @@ package co
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 )
 
@@ -28,9 +26,7 @@ type TaskFunc func(ctx context.Context) error
 
 type Coroutine struct {
 	opts    *Options
-	ctx     context.Context
-	cancel  context.CancelFunc
-	isClose int32
+	isClose bool
 }
 
 func (co *Coroutine) GetOpts() *Options {
@@ -42,7 +38,7 @@ func (co *Coroutine) GetExecuter() *Executer {
 }
 
 func (co *Coroutine) IsClose() bool {
-	return atomic.LoadInt32(&co.isClose) == 1
+	return co.isClose
 }
 
 func (co *Coroutine) Close() {
@@ -50,8 +46,7 @@ func (co *Coroutine) Close() {
 		return
 	}
 
-	co.cancel()
-	atomic.StoreInt32(&co.isClose, 1)
+	co.isClose = true
 }
 
 func (co *Coroutine) RunAsync(ctx context.Context, f TaskFunc, opts *RunOptions) error {
@@ -81,7 +76,7 @@ func (co *Coroutine) PrepareWait() uint64 {
 func (co *Coroutine) Wait(ctx context.Context, sessionID uint64) error {
 	r := co.GetExecuter().Wait(ctx, sessionID)
 	if co.IsClose() {
-		panic("coroutine close")
+		panic(ErrCoroutineClosed)
 	}
 	return r
 }
@@ -93,7 +88,7 @@ func (co *Coroutine) Wakeup(sessionID uint64, result error) {
 func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
 	sessionID := co.PrepareWait()
 
-	err := co.Async(func(ctx context.Context) error {
+	err := co.Async(ctx, func(ctx context.Context) error {
 		err := f(ctx)
 		co.Wakeup(sessionID, err)
 		return err
@@ -104,17 +99,14 @@ func (co *Coroutine) Await(ctx context.Context, f TaskFunc) error {
 	}
 	err = co.Wait(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, ErrNeedFromCoroutine) || errors.Is(err, ErrWaitSessionMiss) {
-			co.Wakeup(sessionID, err)
-		}
 		return err
 	}
 	return nil
 }
 
-func (co *Coroutine) Async(f TaskFunc) error {
+func (co *Coroutine) Async(ctx context.Context, f TaskFunc) error {
 	t := func() {
-		ctx := WithContextCO(co.ctx, co)
+		ctx := WithContextCO(ctx, co)
 		_ = f(ctx)
 	}
 	if co.GetExecuter().GetOpts().AsyncTaskSubmit != nil {
@@ -131,9 +123,6 @@ func (co *Coroutine) Sleep(ctx context.Context, d time.Duration) {
 	})
 	err := co.Wait(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, ErrNeedFromCoroutine) || errors.Is(err, ErrWaitSessionMiss) {
-			co.Wakeup(sessionID, err)
-		}
 		return
 	}
 }
@@ -173,7 +162,7 @@ func (co *Coroutine) OnTaskTimeout(t Task) {
 		co.opts.OnTaskTimeout(co, t)
 	}
 }
+
 func (co *Coroutine) init(opts *Options) error {
-	co.ctx, co.cancel = context.WithCancel(opts.Executer.GetCtx())
 	return nil
 }

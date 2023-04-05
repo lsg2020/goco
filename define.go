@@ -11,11 +11,12 @@ var (
 	ErrCoroutineLimitAmount = errors.New("coroutine limit amount")
 	ErrNeedFromCoroutine    = errors.New("need from coroutine")
 	ErrAlreadyInCoroutine   = errors.New("already in coroutine")
+	ErrCoroutineClosed      = errors.New("coroutine close")
 )
 
-type ContextKey struct{ _ int }
+type contextKey int
 
 var (
-	ctxCOKey   = &ContextKey{}
-	ctxTaskKey = &ContextKey{}
+	ctxCOKey   contextKey = 0
+	ctxTaskKey contextKey = 1
 )

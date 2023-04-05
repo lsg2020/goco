@@ -2,14 +2,11 @@ package co
 
 import (
 	"context"
-	"runtime"
-	"time"
 )
 
 const (
 	defaultInitWorkAmount  = 5
 	defaultWorkChannelSize = 1024
-	defaultRunLimitTime    = time.Second * 5
 )
 
 type ExOptions struct {
@@ -29,9 +26,6 @@ type ExOptions struct {
 }
 
 func (opts *ExOptions) init() error {
-	if opts == nil {
-		opts = &ExOptions{}
-	}
 	if opts.Name == "" {
 		return ErrNeedExecuterName
 	}
@@ -46,10 +40,9 @@ func (opts *ExOptions) init() error {
 }
 
 type Options struct {
-	Name         string
-	DebugInfo    string
-	RunLimitTime time.Duration
-	Executer     *Executer
+	Name      string
+	DebugInfo string
+	Executer  *Executer
 
 	OnTaskSuspended func(co *Coroutine, t Task)
 	OnTaskResume    func(co *Coroutine, t Task)
@@ -60,28 +53,19 @@ type Options struct {
 }
 
 func (opts *Options) init() error {
-	if opts == nil {
-		opts = &Options{}
-	}
 	if opts.Name == "" {
 		return ErrNeedCoroutineName
 	}
 	if opts.Executer == nil {
 		return ErrNeedExecuter
 	}
-	if opts.RunLimitTime == 0 {
-		opts.RunLimitTime = defaultRunLimitTime
-	}
 	return nil
 }
 
 type RunOptions struct {
-	Name         string
-	Result       func(error)
-	RunLimitTime time.Duration
-
-	file string
-	line int
+	Name    string
+	Result  func(error)
+	HookRun func(task Task, ctx context.Context, f func(ctx context.Context) error) error
 }
 
 func (opts *RunOptions) init() *RunOptions {
@@ -90,10 +74,6 @@ func (opts *RunOptions) init() *RunOptions {
 	}
 	if opts.Name == "" {
 		opts.Name = "unknown"
-	}
-	_, file, line, ok := runtime.Caller(2)
-	if ok {
-		opts.file, opts.line = file, line
 	}
 	return opts
 }

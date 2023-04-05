@@ -34,7 +34,7 @@ func main() {
 
 				result = testData
 				return nil
-			}, &co.RunOptions{RunLimitTime: time.Second * 2})
+			}, &co.RunOptions{})
 
 			log.Println("run result:", coID, result, err)
 		}(context.Background(), i)

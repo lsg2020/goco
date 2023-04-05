@@ -45,7 +45,7 @@ func main() {
 				return nil
 			}, &co.RunOptions{Result: func(err error) {
 				<-ch
-			}, RunLimitTime: -1})
+			}})
 		case <-ctx.Done():
 			return
 		}

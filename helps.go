@@ -84,7 +84,7 @@ func Async(ctx context.Context, f TaskFunc) error {
 	if co == nil {
 		return ErrNeedFromCoroutine
 	}
-	return co.Async(f)
+	return co.Async(ctx, f)
 }
 
 func Sleep(ctx context.Context, d time.Duration) {

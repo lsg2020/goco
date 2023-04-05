@@ -9,13 +9,6 @@ import (
 	"time"
 )
 
-type Task interface {
-	GetName() string
-	Run(context.Context)
-	OnSuspended()
-	OnResume()
-}
-
 type wakeup struct {
 	sessionID uint64
 	result    error
@@ -81,12 +74,13 @@ func (ex *Executer) Close() {
 }
 
 func (ex *Executer) Run(ctx context.Context, t Task) error {
-	if FromContextTask(ctx) != nil {
-		return ErrAlreadyInCoroutine
-	}
 	ex.OnTaskStart(t)
-	ex.tasks <- task{ctx: ctx, t: t}
-	return nil
+	select {
+	case ex.tasks <- task{ctx: ctx, t: t}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (ex *Executer) Wakeup(sessionID uint64, err error) {
@@ -105,12 +99,12 @@ func (ex *Executer) PrepareWait() uint64 {
 func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 	t := FromContextTask(ctx)
 	if t == nil {
-		return ErrNeedFromCoroutine
+		panic(fmt.Errorf("wait need in coroutine, %w", ErrNeedFromCoroutine))
 	}
 
 	waitCond, ok := ex.waitConds[sessionID]
 	if !ok {
-		return ErrWaitSessionMiss
+		panic(fmt.Errorf("wait session not found, %w", ErrWaitSessionMiss))
 	}
 	ex.waitAmount++
 	currentWorkId := ex.workId
@@ -252,7 +246,7 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 			if ex.opts.HookRun != nil {
 				ex.opts.HookRun(ex, info.t, info.ctx)
 			} else {
-				info.t.Run(info.ctx)
+				info.t.OnResult(info.t.Run(info.ctx))
 			}
 			ex.OnTaskFinish(info.t)
 		case w := <-ex.wakeups:
