@@ -44,7 +44,7 @@ func (t *coTask) Run(ctx context.Context) error {
 	ctx = WithContextCO(ctx, t.co)
 	ctx = WithContextTask(ctx, t)
 
-	impl := func(ctx context.Context) (err error) {
+	impl := func(_ Task, ctx context.Context) (err error) {
 		t.co.OnTaskRunning(t)
 
 		defer func() {
@@ -64,11 +64,10 @@ func (t *coTask) Run(ctx context.Context) error {
 		return
 	}
 
-	if t.opts.HookRun != nil {
-		return t.opts.HookRun(t, ctx, impl)
-	} else {
-		return impl(ctx)
+	for i := len(t.opts.HookRun) - 1; i >= 0; i-- {
+		impl = t.opts.HookRun[i](impl)
 	}
+	return impl(t, ctx)
 }
 
 func (t *coTask) OnResult(err error) {

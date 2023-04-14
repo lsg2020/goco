@@ -120,7 +120,7 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		ex.cond.L.Lock()
 	}
 
-	impl := func() error {
+	impl := func(ex *Executer, t Task, sessionID uint64) error {
 		t.OnSuspended()
 		ex.pushWait(sessionID, ctx)
 
@@ -131,11 +131,10 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		t.OnResume()
 		return ex.waitResult
 	}
-	if ex.opts.HookWait != nil {
-		ex.opts.HookWait(ex, t, sessionID, impl)
-	} else {
-		_ = impl()
+	for i := len(ex.opts.HookWait) - 1; i >= 0; i-- {
+		impl = ex.opts.HookWait[i](impl)
 	}
+	_ = impl(ex, t, sessionID)
 
 	ex.workId = currentWorkId
 	ex.waitAmount--
@@ -190,7 +189,7 @@ func (ex *Executer) monitor(ctx context.Context) {
 		cases, sessions = pushCase(cases, sessions, 0, ex.waitContext)
 		for session, ctx := range ex.waitSessions {
 			cases, sessions = pushCase(cases, sessions, session, ctx)
-			if len(cases) > 8192 {
+			if len(cases) > 512 {
 				break
 			}
 		}
@@ -201,7 +200,7 @@ func (ex *Executer) monitor(ctx context.Context) {
 			break
 		}
 		if chosen == 1 {
-			time.Sleep(time.Millisecond * 100)
+			time.Sleep(time.Millisecond * 50)
 			continue
 		}
 
@@ -238,16 +237,20 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 	initWg.Done()
 	ex.cond.Wait()
 
+	run := func(task Task, ctx context.Context) error {
+		return task.Run(ctx)
+	}
+
 	ex.workId = workId
 	for {
 		select {
 		case info := <-ex.tasks:
 			ex.OnTaskRunning(info.t)
-			if ex.opts.HookRun != nil {
-				ex.opts.HookRun(ex, info.t, info.ctx)
-			} else {
-				info.t.OnResult(info.t.Run(info.ctx))
+			impl := run
+			for i := len(ex.opts.HookRun) - 1; i >= 0; i-- {
+				impl = ex.opts.HookRun[i](impl)
 			}
+			info.t.OnResult(impl(info.t, info.ctx))
 			ex.OnTaskFinish(info.t)
 		case w := <-ex.wakeups:
 			waitCond, ok := ex.waitConds[w.sessionID]

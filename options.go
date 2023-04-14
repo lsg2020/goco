@@ -9,14 +9,19 @@ const (
 	defaultWorkChannelSize = 1024
 )
 
+type FilterRunChain func(next FilterRun) FilterRun
+type FilterRun func(task Task, ctx context.Context) error
+type FilterWaitChain func(next FilterWait) FilterWait
+type FilterWait func(ex *Executer, t Task, sessionID uint64) error
+
 type ExOptions struct {
 	Name            string
 	InitWorkAmount  int
 	WorkChannelSize int
 	AsyncTaskSubmit func(func()) error
 
-	HookRun  func(ex *Executer, task Task, ctx context.Context)
-	HookWait func(ex *Executer, t Task, sessionID uint64, f func() error)
+	HookRun  []FilterRunChain
+	HookWait []FilterWaitChain
 
 	OnWorkerCreate func(ex *Executer)
 	OnTaskStart    func(ex *Executer, t Task)
@@ -65,7 +70,7 @@ func (opts *Options) init() error {
 type RunOptions struct {
 	Name    string
 	Result  func(error)
-	HookRun func(task Task, ctx context.Context, f func(ctx context.Context) error) error
+	HookRun []FilterRunChain
 }
 
 func (opts *RunOptions) init() *RunOptions {
