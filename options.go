@@ -45,9 +45,8 @@ func (opts *ExOptions) init() error {
 }
 
 type Options struct {
-	Name      string
-	DebugInfo string
-	Executer  *Executer
+	Name     string
+	Executer *Executer
 
 	OnTaskSuspended func(co *Coroutine, t Task)
 	OnTaskResume    func(co *Coroutine, t Task)

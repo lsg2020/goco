@@ -86,6 +86,6 @@ func (t *coTask) getStatus() StatusType {
 }
 
 func (t *coTask) GetName() string {
-	name := t.co.opts.Name + ":" + t.co.opts.DebugInfo + ":" + t.opts.Name
+	name := t.co.opts.Name + ":" + t.opts.Name
 	return name
 }

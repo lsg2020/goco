@@ -163,6 +163,6 @@ func (co *Coroutine) OnTaskTimeout(t Task) {
 	}
 }
 
-func (co *Coroutine) init(opts *Options) error {
+func (co *Coroutine) init(_ *Options) error {
 	return nil
 }

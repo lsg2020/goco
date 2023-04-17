@@ -18,7 +18,7 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	coroutine, err := co.New(&co.Options{Name: "test", DebugInfo: "test01", Executer: ex})
+	coroutine, err := co.New(&co.Options{Name: "test", Executer: ex})
 	if err != nil {
 		log.Fatal(err)
 	}

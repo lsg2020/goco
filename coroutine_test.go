@@ -13,7 +13,7 @@ func TestCO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coroutine, err := New(&Options{Name: "test", DebugInfo: "test", Executer: ex})
+	coroutine, err := New(&Options{Name: "test", Executer: ex})
 	if err != nil {
 		t.Fatal(err)
 	}
