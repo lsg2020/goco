@@ -7,18 +7,20 @@ import (
 const (
 	defaultInitWorkAmount  = 5
 	defaultWorkChannelSize = 1024
+	defaultWaitShards      = 5
 )
 
 type FilterRunChain func(next FilterRun) FilterRun
 type FilterRun func(task Task, ctx context.Context) error
 type FilterWaitChain func(next FilterWait) FilterWait
-type FilterWait func(ex *Executer, t Task, sessionID uint64) error
+type FilterWait func(ex *Executer, t Task, sessionID uint64, ctx context.Context) error
 
 type ExOptions struct {
 	Name            string
 	InitWorkAmount  int
 	WorkChannelSize int
 	AsyncTaskSubmit func(func()) error
+	WaitShards      uint64
 
 	HookRun  []FilterRunChain
 	HookWait []FilterWaitChain
@@ -39,6 +41,9 @@ func (opts *ExOptions) init() error {
 	}
 	if opts.WorkChannelSize == 0 {
 		opts.WorkChannelSize = defaultWorkChannelSize
+	}
+	if opts.WaitShards == 0 {
+		opts.WaitShards = defaultWaitShards
 	}
 
 	return nil

@@ -3,10 +3,8 @@ package co
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 	"sync/atomic"
-	"time"
 )
 
 type wakeup struct {
@@ -44,7 +42,7 @@ type Executer struct {
 
 	cond *sync.Cond
 
-	workId      int
+	workID      int
 	workAmount  int
 	waitAmount  int
 	nextSession uint64
@@ -55,10 +53,7 @@ type Executer struct {
 	waitConds  map[uint64]*sync.Cond
 	waitResult error
 
-	waitMutex    sync.Mutex
-	waitContext  context.Context
-	waitCancel   context.CancelFunc
-	waitSessions map[uint64]context.Context
+	waitSessionMgr *WaitSessionMgr
 }
 
 func (ex *Executer) GetOpts() *ExOptions {
@@ -107,7 +102,7 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		panic(fmt.Errorf("wait session not found, %w", ErrWaitSessionMiss))
 	}
 	ex.waitAmount++
-	currentWorkId := ex.workId
+	currentWorkID := ex.workID
 
 	if ex.waitAmount == ex.workAmount {
 		ex.workAmount++
@@ -120,27 +115,27 @@ func (ex *Executer) Wait(ctx context.Context, sessionID uint64) error {
 		ex.cond.L.Lock()
 	}
 
-	impl := func(ex *Executer, t Task, sessionID uint64) error {
+	impl := func(ex *Executer, t Task, sessionID uint64, ctx context.Context) error {
 		t.OnSuspended()
-		ex.pushWait(sessionID, ctx)
+		ex.waitSessionMgr.PushWait(sessionID, ctx)
 
 		ex.cond.Signal()
 		waitCond.Wait()
 
-		ex.popWait(sessionID)
+		ex.waitSessionMgr.PopWait(sessionID)
 		t.OnResume()
 		return ex.waitResult
 	}
 	for i := len(ex.opts.HookWait) - 1; i >= 0; i-- {
 		impl = ex.opts.HookWait[i](impl)
 	}
-	_ = impl(ex, t, sessionID)
+	r := impl(ex, t, sessionID, ctx)
 
-	ex.workId = currentWorkId
+	ex.workID = currentWorkID
 	ex.waitAmount--
 	// delete(ex.waitConds, sessionID)
 
-	return ex.waitResult
+	return r
 }
 
 func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize int) error {
@@ -151,15 +146,14 @@ func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize i
 	ex.tasks = make(chan task, channelSize)
 	ex.wakeups = make(chan wakeup, channelSize)
 
-	ex.workAmount = initWorkAmount
-
-	ex.waitContext, ex.waitCancel = context.WithCancel(ctx)
-	ex.waitSessions = make(map[uint64]context.Context)
 	ex.waitConds = make(map[uint64]*sync.Cond)
-	go ex.monitor(ctx)
+	ex.waitSessionMgr = NewWaitSessionMgr(ctx, ex.opts.WaitShards, func(sessionID uint64) {
+		ex.Wakeup(sessionID, ErrCancelContext)
+	})
 
 	initWg := &sync.WaitGroup{}
-	for i := 0; i < ex.workAmount; i++ {
+	ex.workAmount = initWorkAmount
+	for i := 0; i < initWorkAmount; i++ {
 		initWg.Add(1)
 		go ex.work(initWg, i+1)
 	}
@@ -170,68 +164,7 @@ func (ex *Executer) start(ctx context.Context, initWorkAmount int, channelSize i
 	return nil
 }
 
-func (ex *Executer) monitor(ctx context.Context) {
-	cases := make([]reflect.SelectCase, 0, 128)
-	sessions := make([]uint64, 0, 128)
-	pushCase := func(cases []reflect.SelectCase, sessions []uint64, sessionID uint64, ctx context.Context) ([]reflect.SelectCase, []uint64) {
-		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
-		sessions = append(sessions, sessionID)
-		return cases, sessions
-	}
-
-	for {
-		cases = cases[:0]
-		sessions = sessions[:0]
-
-		ex.waitMutex.Lock()
-		ex.waitContext, ex.waitCancel = context.WithCancel(ctx)
-		cases, sessions = pushCase(cases, sessions, 0, ctx)
-		cases, sessions = pushCase(cases, sessions, 0, ex.waitContext)
-		for session, ctx := range ex.waitSessions {
-			cases, sessions = pushCase(cases, sessions, session, ctx)
-			if len(cases) > 512 {
-				break
-			}
-		}
-		ex.waitMutex.Unlock()
-
-		chosen, _, _ := reflect.Select(cases)
-		if chosen == 0 {
-			break
-		}
-		if chosen == 1 {
-			time.Sleep(time.Millisecond * 50)
-			continue
-		}
-
-		ex.Wakeup(sessions[chosen], ErrCancelContext)
-	}
-}
-
-func (ex *Executer) changeWait() {
-	if ex.waitCancel != nil {
-		ex.waitCancel()
-		ex.waitCancel = nil
-	}
-}
-
-func (ex *Executer) pushWait(sessionID uint64, ctx context.Context) {
-	ex.waitMutex.Lock()
-	defer ex.waitMutex.Unlock()
-
-	ex.waitSessions[sessionID] = ctx
-	ex.changeWait()
-}
-
-func (ex *Executer) popWait(sessionID uint64) {
-	ex.waitMutex.Lock()
-	defer ex.waitMutex.Unlock()
-
-	delete(ex.waitSessions, sessionID)
-	ex.changeWait()
-}
-
-func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
+func (ex *Executer) work(initWg *sync.WaitGroup, workID int) {
 	ex.cond.L.Lock()
 	ex.OnWorkerCreate()
 	initWg.Done()
@@ -241,7 +174,7 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 		return task.Run(ctx)
 	}
 
-	ex.workId = workId
+	ex.workID = workID
 	for {
 		select {
 		case info := <-ex.tasks:
@@ -260,7 +193,7 @@ func (ex *Executer) work(initWg *sync.WaitGroup, workId int) {
 				ex.waitResult = w.result
 				waitCond.Signal()
 				ex.cond.Wait()
-				ex.workId = workId
+				ex.workID = workID
 			}
 		case <-ex.ctx.Done():
 			return
@@ -285,6 +218,7 @@ func (ex *Executer) OnTaskRunning(t Task) {
 		ex.opts.OnTaskRunning(ex, t)
 	}
 }
+
 func (ex *Executer) OnTaskFinish(t Task) {
 	if ex.opts.OnTaskFinish != nil {
 		ex.opts.OnTaskFinish(ex, t)
